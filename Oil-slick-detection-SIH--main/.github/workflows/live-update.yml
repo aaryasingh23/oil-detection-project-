@@ -1,0 +1,72 @@
+# Every 4 hours: find new Sentinel-1 scenes over Indian seas, run the oil-slick model and
+# publish the results as a SQLite file on the "data" release. The website downloads that
+# file every 20 minutes. No external database needed.
+name: live-update
+
+on:
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days back to look for scenes"
+        default: "3"
+
+permissions:
+  contents: write   # upload the data file to the release
+
+concurrency:
+  group: live-update
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OILSPILL_DATA_DIR: /tmp/oilspill
+      OILSPILL_MODELS_DIR: models
+      DATABASE_URL: sqlite:///${{ github.workspace }}/data/oilspill.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -e .
+          pip install onnxruntime "sqlalchemy>=2"
+
+      - name: Download model
+        run: gh release download model-v1 --pattern model.onnx --dir models
+
+      - name: Download current data file
+        run: |
+          mkdir -p data
+          gh release view data >/dev/null 2>&1 || gh release create data --title "Live data" \
+            --notes "Detections database, updated automatically every 4 hours by the live-update workflow." --prerelease
+          gh release download data --pattern oilspill.db --dir data || echo "no data file yet - starting fresh"
+
+      - name: Detect slicks in new scenes
+        run: |
+          DAYS="${{ github.event.inputs.days || '3' }}"
+          python scripts/run_batch.py --start "$(date -u -d "-${DAYS} days" +%F)" --max-scenes 300
+
+      - name: Publish data file
+        if: always()
+        run: |
+          test -f data/oilspill.db || exit 0
+          python - <<'PY'
+          import sqlite3
+          c = sqlite3.connect("data/oilspill.db")
+          c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+          c.execute("PRAGMA journal_mode=DELETE")
+          c.execute("VACUUM")
+          c.close()
+          PY
+          ls -la data/oilspill.db
+          gh release upload data data/oilspill.db --clobber

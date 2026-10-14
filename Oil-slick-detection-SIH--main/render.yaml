@@ -1,0 +1,15 @@
+# Render Blueprint: New > Blueprint > pick this repo. Free plan sleeps after 15 min idle.
+services:
+  - type: web
+    name: ocean-police
+    runtime: docker
+    plan: free
+    region: ohio            # same region as the Neon database (AWS us-east-2) = faster queries
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Detections are published by the live-update workflow as a SQLite file on the
+      # "data" release; the server downloads it every 20 minutes (no external database).
+      - key: DATA_RELEASE_URL
+        value: https://github.com/nh7k/Oil-slick-detection-SIH-/releases/download/data/oilspill.db
